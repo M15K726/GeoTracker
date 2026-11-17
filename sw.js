@@ -1,6 +1,6 @@
 // AVW Global Intelligence service worker.
 // Bump this value whenever the application shell changes.
-const VERSION = "avw-global-v3";
+const VERSION = "avw-global-v4";
 const CORE_FILES = ["/", "/index.html", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 const OPTIONAL_FILES = ["/globe.gl.min.js", "/countries.json"];
 

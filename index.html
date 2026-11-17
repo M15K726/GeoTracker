@@ -81,6 +81,7 @@ button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(-
 var $=function(i){return document.getElementById(i)},esc=function(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})};
 var clamp=function(v,a,b){return Math.max(a,Math.min(b,v))},hsl=function(h){return"hsl("+Math.round(h)+" 55% 45%)"};
 var F=[],D={},g,S={m:"risk",sel:null,fc:null,cat:"All",items:null},NC={};
+function getJSON(url,ms){return fetch(url,{signal:AbortSignal.timeout(ms||12000),cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()})}
 var M={
  risk:{t:"Risk index",f:function(d){return d.risk},c:function(v){return hsl(140-v*1.4)},a:"Lower risk",b:"Higher risk",g:"linear-gradient(90deg,hsl(140 55% 45%),hsl(70 55% 45%),hsl(0 55% 45%))"},
  gdp:{t:"GDP growth",f:function(d){return d.gdp},c:function(v){return hsl(clamp((v+4)/12,0,1)*140)},a:"Contracting",b:"Growing",g:"linear-gradient(90deg,hsl(0 55% 45%),hsl(70 55% 45%),hsl(140 55% 45%))"},
@@ -88,21 +89,23 @@ var M={
 function st(n,s){var e=document.querySelector('[data-s="'+n+'"]');if(!e){e=document.createElement("span");e.dataset.s=n;$("st").appendChild(e)}e.className=s===1?"on":s===0?"off":"";e.textContent=n+": "+(s===1?"live":s===0?"unavailable":"loading")}
 function riskOf(d){var p=[];if(d.pol!=null)p.push([clamp((2.5-d.pol)/5,0,1)*100,.5]);if(d.cpi!=null)p.push([clamp(d.cpi/40,0,1)*100,.25]);if(d.gdp!=null)p.push([clamp((4-d.gdp)/12,0,1)*100,.25]);if(!p.length)return;var w=0,s=0;p.forEach(function(x){s+=x[0]*x[1];w+=x[1]});return Math.round(s/w)}
 async function wb(){
- try{var c=JSON.parse(localStorage.getItem("geo-wb")||"null");if(c&&Date.now()-c.t<864e5)return c.d}catch(e){}
+ var cached=null;
+ try{cached=JSON.parse(localStorage.getItem("geo-wb")||"null")}catch(e){}
+ // Use recent cached data immediately; refresh after six hours rather than holding stale values for a full day.
+ if(cached&&cached.d&&Date.now()-cached.t<6*3600e3)return cached.d;
  var K={gdp:"NY.GDP.MKTP.KD.ZG",cpi:"FP.CPI.TOTL.ZG",pol:"PV.EST",une:"SL.UEM.TOTL.ZS",pop:"SP.POP.TOTL",pc:"NY.GDP.PCAP.CD"},d={};
  await Promise.all(Object.keys(K).map(async function(k){try{
-  var r=await fetch("https://api.worldbank.org/v2/country/all/indicator/"+K[k]+"?format=json&mrnev=5&per_page=2000");
-  if(!r.ok)throw new Error("World Bank HTTP "+r.status);
-  var j=await r.json();
+  var url="https://api.worldbank.org/v2/country/all/indicator/"+K[k]+"?format=json&mrnev=5&per_page=2000";
+  var j=await getJSON(url,14000);
   if(!Array.isArray(j)||!Array.isArray(j[1]))throw new Error("Unexpected World Bank response");
-  // Keep the newest non-empty observation for each country and indicator.
   (j[1]||[]).forEach(function(x){if(x.value!=null&&x.countryiso3code){
    var row=d[x.countryiso3code]=d[x.countryiso3code]||{};
    if(row[k]==null||Number(x.date)>Number(row[k+"Year"])){row[k]=x.value;row[k+"Year"]=x.date}
   }});
  }catch(e){console.warn("World Bank indicator failed:",k,e)}}));
- if(!Object.keys(d).length)throw 0;
+ if(!Object.keys(d).length){if(cached&&cached.d)return cached.d;throw new Error("World Bank data unavailable")}
  try{localStorage.setItem("geo-wb",JSON.stringify({t:Date.now(),d:d}))}catch(e){}return d}
+
 function dat(f){return D[f.properties.i]||{}}
 function cap(f){var p=f.properties;if(p.i&&p.i===S.sel)return"#ffffff";var v=M[S.m].f(dat(f));return v==null?"#2b3a47":M[S.m].c(v)}
 function alt(f){return f.properties.i&&f.properties.i===S.sel?.05:.006}
@@ -125,17 +128,18 @@ var CAT=[["Energy",/\b(oil|gas|opec|energy|pipeline|fuel|crude|lng)\b/i],["Crypt
 function cat(t){for(var i=0;i<CAT.length;i++)if(CAT[i][1].test(t))return CAT[i][0];return"World"}
 function ago(s){var m=/(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)/.exec(s||"");if(!m)return"";var h=(Date.now()-Date.UTC(m[1],m[2]-1,m[3],m[4],m[5],m[6]))/36e5;return h<1?Math.max(1,Math.round(h*60))+"m ago":h<48?Math.round(h)+"h ago":Math.round(h/24)+"d ago"}
 async function news(q,n,ts){var u="https://api.gdeltproject.org/api/v2/doc/doc?query="+encodeURIComponent(q)+"&mode=artlist&maxrecords="+n+"&format=json&sort=datedesc&timespan="+ts;
- for(var t=0;t<2;t++){try{var j=JSON.parse(await(await fetch(u)).text());return j.articles||[]}catch(e){if(t)throw e;await new Promise(function(r){setTimeout(r,5500)})}}}
+ var j=await getJSON(u,9000);return j.articles||[]}
+
 var ft;
 function loadFeed(){clearTimeout(ft);ft=setTimeout(async function(){var key=S.fc?S.fc.n:"*";S.items=undefined;drawFeed();
- try{var a=NC[key]||(NC[key]=await news(S.fc?'"'+S.fc.n+'" sourcelang:eng':'(sanctions OR election OR ceasefire OR tariff OR "central bank" OR OPEC OR bitcoin OR inflation) sourcelang:eng',S.fc?12:25,S.fc?"3d":"24h"));
+ try{var a=NC[key]||(NC[key]=await news(S.fc?'"'+S.fc.n+'" sourcelang:eng':'(sanctions OR election OR ceasefire OR tariff OR "central bank" OR OPEC OR bitcoin OR inflation) sourcelang:eng',S.fc?10:20,S.fc?"3d":"24h"));
   if((S.fc?S.fc.n:"*")!==key)return;S.items=a;st("News",1)}catch(e){if((S.fc?S.fc.n:"*")!==key)return;S.items=null;st("News",0)}drawFeed()},S.fc?500:0)}
 function drawFeed(){$("fh").innerHTML=S.fc?"News: "+esc(S.fc.n)+' <button class="chip" id="gl">Show global</button>':"Global news";
  var gb=$("gl");if(gb)gb.onclick=function(){S.fc=null;loadFeed()};
  $("ch").innerHTML=["All","Politics","Energy","Macro","Markets","Crypto"].map(function(c){return'<button class="chip" data-c="'+c+'" aria-pressed="'+(S.cat===c)+'">'+c+"</button>"}).join("");
  [].forEach.call($("ch").children,function(b){b.onclick=function(){S.cat=b.dataset.c;drawFeed()}});
  var f=$("feed");if(S.items===undefined){f.innerHTML='<p class="note">Loading news...</p>';return}
- if(S.items===null){f.innerHTML='<p class="note">The news source did not respond. It limits requests, so wait a few seconds.</p><button class="chip" id="rt">Retry</button>';$("rt").onclick=function(){delete NC[S.fc?S.fc.n:"*"];loadFeed()};return}
+ if(S.items===null){f.innerHTML='<p class="note">The news source did not respond in time. Try again shortly.</p><button class="chip" id="rt">Retry</button>';$("rt").onclick=function(){delete NC[S.fc?S.fc.n:"*"];loadFeed()};return}
  var l=S.items.filter(function(a){return /^https?:/.test(a.url)}).map(function(a){return{a:a,c:cat(a.title||"")}}).filter(function(x){return S.cat==="All"||x.c===S.cat});
  f.innerHTML=l.length?l.map(function(x){return'<a class="it" target="_blank" rel="noopener" href="'+esc(x.a.url)+'">'+esc(x.a.title||"")+"<small>"+esc(x.c+", "+(x.a.domain||"")+(x.a.sourcecountry?", "+x.a.sourcecountry:"")+", "+ago(x.a.seendate))+"</small></a>"}).join(""):'<p class="note">Nothing in this category right now.</p>'}
 function walk(seed,end){var s=seed,p=100,a=[];for(var i=0;i<30;i++){s=(s*9301+49297)%233280;p*=1+(s/233280-.5)*.012;a.push(p)}var k=end/a[29];return a.map(function(x){return x*k})}
@@ -143,9 +147,9 @@ var T=[];
 function fmt(v,u){return(u||"")+(v>=1000?Math.round(v).toLocaleString("en-US"):v>=10?v.toFixed(2):v.toFixed(3))}
 function drawTicks(){if(!T.length){$("tk").innerHTML='<p class="note">Live market data is temporarily unavailable. No placeholder prices are shown.</p>';return}$("tk").innerHTML=T.map(function(t){var s=t.s,c=(s[s.length-1]/s[0]-1)*100,mn=Math.min.apply(0,s),mx=Math.max.apply(0,s);
  return'<div class="tk"><b>'+esc(t.n)+"<em>"+t.x+"</em></b><span>"+fmt(s[s.length-1],t.u)+'</span><i class="'+(c>=0?"up":"dn")+'">'+(c>=0?"+":"")+c.toFixed(1)+'%</i><svg viewBox="0 0 100 24" preserveAspectRatio="none" height="24"><polyline fill="none" stroke="currentColor" stroke-width="1.6" points="'+s.map(function(v,i){return(i*100/(s.length-1)).toFixed(1)+","+(22-(v-mn)/(mx-mn||1)*20).toFixed(1)}).join(" ")+'"/></svg></div>'}).join("")}
-async function crypto(){try{var cr=await fetch("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,pax-gold&sparkline=true");if(!cr.ok)throw new Error("CoinGecko HTTP "+cr.status);var j=await cr.json(),nm={bitcoin:"Bitcoin",ethereum:"Ethereum",solana:"Solana","pax-gold":"Gold (PAXG)"};
+async function crypto(){try{var j=await getJSON("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,pax-gold&sparkline=true",10000),nm={bitcoin:"Bitcoin",ethereum:"Ethereum",solana:"Solana","pax-gold":"Gold (PAXG)"};
  var L=j.filter(function(c){return c.sparkline_in_7d&&c.sparkline_in_7d.price.length}).map(function(c){return{n:nm[c.id]||c.name,s:c.sparkline_in_7d.price,x:"Live, 7d",u:"$"}});if(!L.length)throw 0;T=L.concat(T);st("Crypto",1)}catch(e){st("Crypto",0)}}
-async function fx(){try{var a=new Date(Date.now()-30*864e5).toISOString().slice(0,10),fr=await fetch("https://api.frankfurter.dev/v1/"+a+"..?base=USD&symbols=INR,EUR,JPY,CNY");if(!fr.ok)throw new Error("Frankfurter HTTP "+fr.status);var j=await fr.json(),ds=Object.keys(j.rates).sort(),L=["INR","EUR","JPY","CNY"].map(function(k){return{n:"USD/"+k,s:ds.map(function(d){return j.rates[d][k]}),x:"Live, 30d"}});if(!ds.length)throw 0;
+async function fx(){try{var a=new Date(Date.now()-30*864e5).toISOString().slice(0,10),j=await getJSON("https://api.frankfurter.dev/v1/"+a+"..?base=USD&symbols=INR,EUR,JPY,CNY",10000),ds=Object.keys(j.rates).sort(),L=["INR","EUR","JPY","CNY"].map(function(k){return{n:"USD/"+k,s:ds.map(function(d){return j.rates[d][k]}),x:"Live, 30d"}});if(!ds.length)throw 0;
  T=T.filter(function(t){return t.x!=="Live, 30d"}).concat(L);st("Currencies",1)}catch(e){st("Currencies",0)}}
 function init(){
  st("Countries",2);st("World Bank",2);st("Crypto",2);st("Currencies",2);st("News",2);drawMetric();drawPanel();drawTicks();loadFeed();
@@ -153,11 +157,11 @@ function init(){
  var P=wb().then(function(d){D=d;Object.keys(D).forEach(function(k){D[k].risk=riskOf(D[k])});st("World Bank",1)}).catch(function(){st("World Bank",0)});
  fetch("/countries.json").then(function(r){return r.json()}).then(function(j){F=j.features;st("Countries",1);
   $("cl").innerHTML=F.map(function(f){return"<option value=\""+esc(f.properties.n)+"\">"}).sort().join("");
-  var el=$("globe");g=Globe()(el).backgroundColor("rgba(0,0,0,0)").showAtmosphere(true).atmosphereColor("#6cc4e0").atmosphereAltitude(.18).showGraticules(true)
+  var el=$("globe");g=Globe()(el).backgroundColor("rgba(0,0,0,0)").showAtmosphere(true).atmosphereColor("#6cc4e0").atmosphereAltitude(.18).showGraticules(false)
    .width(el.clientWidth).height(el.clientHeight).polygonsData(F).polygonCapColor(cap).polygonSideColor(function(){return"rgba(20,50,70,.6)"}).polygonStrokeColor(function(){return"#0b1620"}).polygonAltitude(alt).polygonsTransitionDuration(0).polygonLabel(lbl).onPolygonClick(function(f){pick(f)});
   g.globeMaterial().color.set("#10293b");g.pointOfView({lat:22,lng:79,altitude:2.2});
-  window.addEventListener("resize",function(){g.width(el.clientWidth).height(el.clientHeight)});
-  P.then(function(){refresh();var i=F.filter(function(f){return f.properties.i==="IND"})[0];if(i)pick(i,0)})}).catch(function(){st("Countries",0)});
+  var resizeTimer;window.addEventListener("resize",function(){clearTimeout(resizeTimer);resizeTimer=setTimeout(function(){if(g)g.width(el.clientWidth).height(el.clientHeight)},120)});
+  var i=F.filter(function(f){return f.properties.i==="IND"})[0];if(i)pick(i,0);P.then(function(){refresh();drawPanel()})}).catch(function(){st("Countries",0)});
  $("q").onchange=function(){var v=this.value.trim().toLowerCase(),f=F.filter(function(x){return x.properties.n.toLowerCase()===v})[0];if(f){pick(f);this.blur()}}}
 init();
 // PWA install experience (Android Chrome / supported browsers).
